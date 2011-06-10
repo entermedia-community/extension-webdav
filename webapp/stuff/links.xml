@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<linktree>
+  <a id="index" text="Index" >
+	<a href="/index.html" id="home" text="Home"/>
+    <a href="/link1.html" id="link1" text="Link 1"/>
+    <a href="/link2.html" id="contact" text="Link 2"/>
+    <a href="/link3.html" id="about" text="Link 3"/>
+  </a>
+</linktree>

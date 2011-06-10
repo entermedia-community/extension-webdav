@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<group>
+  <group-name>approvers</group-name>
+  <permissions>
+    <permission>oe.edit</permission>
+    <permission>oe.edit.approves</permission>
+  </permissions>
+  <properties/>
+</group>

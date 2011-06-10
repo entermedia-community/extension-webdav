@@ -1,0 +1,14 @@
+To test:
+
+1. Start launcher webdav-server
+
+2.  Install this:
+
+http://webfolder.mozdev.org/installation.html
+
+
+3. Then go to File | Open Web Folder
+
+4. Enter http://localhost:8080/stuff/
+
+5. Should see some files show up in the browser.

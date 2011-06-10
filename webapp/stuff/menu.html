@@ -1,0 +1,27 @@
+Example Menu
+
+
+<table border="0" cellpadding="0" cellspacing="0"  height="90%" style="padding-left: 4px">
+
+  #foreach ( $link in $linktree.getLinkChildren("index") )
+    <tr>
+    <td>
+        <a href="$home$link.url" #if ( $link.isChildSelected() )class=smenu #else class=menu #end >$link.text</a><br>
+         #if( $link.isChildSelected() )
+
+          #foreach( $child in $link.children )
+          &nbsp;&nbsp; > <a href="$home$child.url" #if ( $child.isChildSelected() )class=smenu #else class=menu #end >$child.text</a> <br>
+          #end
+
+        #end
+        <br>
+    </td>
+    </tr>
+  #end
+
+
+  <tr height="100%">
+<td valign="bottom" align="right"  ><a href="http://www.openedit.org"><img border=0 width="64" height="64" src="http://www.openedit.org/images/oepowered.gif" /></a></td>
+</tr>
+  
+</table>

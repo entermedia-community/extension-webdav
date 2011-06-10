@@ -1,0 +1,1204 @@
+Index: milton-api/src/main/java/com/bradmcevoy/common/Path.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/common/Path.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/common/Path.java	(working copy)
+@@ -160,13 +160,20 @@
+         return ((parent==null)&&(name==null));
+     }
+     
+-    @Override
+-    public String toString() {
++    public String toPath()
++    {
+         if( isRoot() ) return "";
+         if( parent == null ) return name;
+         return parent.toString() + '/' + name;
+     }
++    
++    @Override
++    public String toString() 
++    {
++    	return toPath();
++    }
+ 
++    
+     public String toString(String delimiter) {
+         if( parent == null ) return "";
+         if( parent == null ) return name;
+Index: milton-api/src/main/java/com/bradmcevoy/http/MkColHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/MkColHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/MkColHandler.java	(working copy)
+@@ -1,8 +1,8 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+-import com.bradmcevoy.http.exceptions.ConflictException;
+ import com.bradmcevoy.http.Request.Method;
++import com.bradmcevoy.http.exceptions.ConflictException;
++import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+ 
+     
+ public class MkColHandler extends NewEntityHandler {
+@@ -23,12 +23,27 @@
+     @Override
+     protected void process(HttpManager milton, Request request, Response response, CollectionResource resource, String newName) throws ConflictException, NotAuthorizedException{
+         MakeCollectionableResource existingCol = (MakeCollectionableResource)resource;
+-        Resource r = existingCol.child(newName);
+-        if( r == null ) {
+-            existingCol.createCollection(newName);
+-            response.setStatus(Response.Status.SC_CREATED);
+-        } else {
+-            throw new ConflictException(resource);
++        try
++        {
++        	//For litmus test and RFC support
++        	if( request.getInputStream().read() > -1) //This should be empty
++        	{
++                response.setStatus(Response.Status.SC_UNSUPPORTED_MEDIA_TYPE);
++                return;
++        	}
++        }
++        catch ( Exception ex)
++        {
++        	ex.printStackTrace();
++        }
++        CollectionResource made = existingCol.createCollection(newName);
++        if( made == null)
++        {
++            response.setStatus(Response.Status.SC_METHOD_NOT_ALLOWED);
++        }
++        else
++        {
++        	response.setStatus(Response.Status.SC_CREATED);
+         }
+     }
+ }
+\ No newline at end of file
+Index: milton-api/src/main/java/com/bradmcevoy/http/DeleteHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/DeleteHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/DeleteHandler.java	(working copy)
+@@ -1,12 +1,17 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.Request.Method;
+ import java.util.ArrayList;
+ import java.util.List;
+ 
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.bradmcevoy.common.Path;
++import com.bradmcevoy.http.Request.Method;
++import com.bradmcevoy.http.Response.Status;
++import com.bradmcevoy.http.exceptions.ConflictException;
++import com.bradmcevoy.http.exceptions.NotAuthorizedException;
++
+ 
+ public class DeleteHandler extends ExistingEntityHandler {
+     
+@@ -27,8 +32,42 @@
+     }        
+ 
+     @Override
++    public void process(HttpManager manager, Request request, Response response) throws NotAuthorizedException, ConflictException {
++        String host = request.getHostHeader();
++        String url = HttpManager.decodeUrl(request.getAbsolutePath());
++
++        Resource r = manager.getResourceFactory().getResource(host, url);
++        if (r != null) {
++            processResource(manager, request, response, r);
++        } else {            
++            //Might be a permission thing
++        	Path col = Path.path(url).getParent();
++        	Resource parent = manager.getResourceFactory().getResource(host, col.toPath());
++        	if( isLockedOut(request, parent))
++        	{
++        		response.setStatus(Status.SC_LOCKED);
++        		return;
++        	}
++        	log.error( "404: in delete" + url);
++        	respondNotFound(response, request);
++        }
++    }
++
++
++    @Override
+     protected void process(HttpManager milton, Request request, Response response, Resource resource) {
+         log.debug("DELETE: " + request.getAbsoluteUrl());
++
++        //check that no children are locked
++        //checkForLock(resource, request);
++        if( isLockedOut(request, resource))
++        {
++        	log.info("Could not delete. Is locked");
++            response.setStatus(Status.SC_LOCKED);
++            return;
++        }
++        
++        
+         DeletableResource r = (DeletableResource) resource;
+         try {
+             delete( r );
+Index: milton-api/src/main/java/com/bradmcevoy/http/XmlWriter.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/XmlWriter.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/XmlWriter.java	(working copy)
+@@ -1,6 +1,5 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.io.FileUtils;
+ import java.io.ByteArrayOutputStream;
+ import java.io.FileNotFoundException;
+ import java.io.IOException;
+@@ -12,6 +11,8 @@
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.bradmcevoy.io.FileUtils;
++
+ public class XmlWriter {
+     private Logger log = LoggerFactory.getLogger(XmlWriter.class);
+     public enum Type {
+Index: milton-api/src/main/java/com/bradmcevoy/http/GetHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/GetHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/GetHandler.java	(working copy)
+@@ -1,15 +1,14 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+ import java.util.Date;
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+-import java.util.regex.Matcher;
+-import java.util.regex.Pattern;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.bradmcevoy.http.exceptions.NotAuthorizedException;
++
+ public class GetHandler extends ExistingEntityHandler {
+ 
+     private static final Logger log = LoggerFactory.getLogger( GetHandler.class );
+@@ -42,14 +41,46 @@
+ 
+     public Range getRange( Request requestInfo ) {
+         // Thanks Igor!
+-        String rangeHeader = requestInfo.getRangeHeader();
+-        if( rangeHeader == null ) return null;
+-        final Matcher matcher = Pattern.compile( "\\s*bytes\\s*=\\s*(\\d+)-(\\d+)" ).matcher( rangeHeader );
+-        if( matcher.matches() ) {
+-            return new Range( Long.parseLong( matcher.group( 1 ) ), Long.parseLong( matcher.group( 2 ) ) );
++//        String rangeHeader = requestInfo.getRangeHeader();
++//        if( rangeHeader == null ) return null;
++//        final Matcher matcher = Pattern.compile( "\\s*bytes\\s*=\\s*(\\d+)-(\\d+)" ).matcher( rangeHeader );
++//        if( matcher.matches() ) {
++//            return new Range( Long.parseLong( matcher.group( 1 ) ), Long.parseLong( matcher.group( 2 ) ) );
++//        }
++//        return null;
++    	
++        	String range = requestInfo.getHeaders().get("Range");
++        	//http://tools.ietf.org/html/rfc2616
++        /*	The first 500 bytes (byte offsets 0-499, inclusive):  bytes=0-
++            499
++
++          - The second 500 bytes (byte offsets 500-999, inclusive):
++            bytes=500-999
++
++          - The final 500 bytes (byte offsets 9500-9999, inclusive):
++            bytes=-500
++
++          - Or bytes=9500-
++    */
++        	if( range == null)
++        	{
++        		return null;
++        	}
++        	String bytes = range.substring(range.indexOf("=") + 1);
++        	String[] startend = bytes.split("-");
++        	
++        	Range use = new Range();
++        	use.start = Long.parseLong(startend[0]);
++        	if( startend.length > 1)
++        	{
++            	use.finish = Long.parseLong(startend[1]);    		
++        	}
++        	else
++        	{
++        		use.finish = -1;
++        	}
++            return use; // TODO: parse range header. Note we don't support multiple
+         }
+-        return null;
+-    }
+ 
+     /** Return true if the resource has not been modified
+      */
+Index: milton-api/src/main/java/com/bradmcevoy/http/PropFindHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/PropFindHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/PropFindHandler.java	(working copy)
+@@ -1,9 +1,11 @@
+ package com.bradmcevoy.http;
+ 
++import java.io.ByteArrayInputStream;
+ import java.io.ByteArrayOutputStream;
+ import java.io.FileNotFoundException;
+ import java.io.IOException;
+ import java.io.InputStream;
++import java.net.URI;
+ import java.net.URISyntaxException;
+ import java.util.ArrayList;
+ import java.util.Date;
+@@ -24,8 +26,6 @@
+ import com.bradmcevoy.http.Request.Method;
+ import com.bradmcevoy.http.XmlWriter.Element;
+ import com.bradmcevoy.io.StreamUtils;
+-import java.io.ByteArrayInputStream;
+-import java.net.URI;
+ 
+ public class PropFindHandler extends ExistingEntityHandler {
+ 
+Index: milton-api/src/main/java/com/bradmcevoy/http/MakeCollectionableResource.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/MakeCollectionableResource.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/MakeCollectionableResource.java	(working copy)
+@@ -1,7 +1,7 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+ import com.bradmcevoy.http.exceptions.ConflictException;
++import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+ 
+ public interface MakeCollectionableResource extends CollectionResource {
+     CollectionResource createCollection(String newName) throws NotAuthorizedException, ConflictException;
+Index: milton-api/src/main/java/com/bradmcevoy/http/MsOfficeResponseHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/MsOfficeResponseHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/MsOfficeResponseHandler.java	(working copy)
+@@ -2,6 +2,7 @@
+ 
+ import java.io.IOException;
+ import java.io.OutputStream;
++
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+Index: milton-api/src/main/java/com/bradmcevoy/http/LockTimeout.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/LockTimeout.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/LockTimeout.java	(working copy)
+@@ -4,6 +4,7 @@
+ import java.util.Calendar;
+ import java.util.Date;
+ import java.util.List;
++
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+Index: milton-api/src/main/java/com/bradmcevoy/http/Range.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/Range.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/Range.java	(working copy)
+@@ -1,11 +1,15 @@
+ package com.bradmcevoy.http;
+-
++ 
+ 
+ 
+ public class Range {
+-    final long start;
+-    final long finish;
++    long start;
++    long finish;
+     
++    public Range()
++	{
++	}
++
+     public Range(long start, long finish) {
+         this.start = start;
+         this.finish = finish;
+Index: milton-api/src/main/java/com/bradmcevoy/http/Handler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/Handler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/Handler.java	(working copy)
+@@ -1,12 +1,13 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+-import com.bradmcevoy.http.exceptions.ConflictException;
+ import java.io.PrintWriter;
+ 
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.bradmcevoy.http.exceptions.ConflictException;
++import com.bradmcevoy.http.exceptions.NotAuthorizedException;
++
+ public abstract class Handler {
+     
+     private static final Logger log = LoggerFactory.getLogger(Handler.class);
+@@ -90,6 +91,36 @@
+         pw.print(s);
+         pw.flush();
+     }
+-        
++ 
++	protected boolean isLockedOut(Request inRequest, Resource inResource)
++	{
++		if( inResource == null || !(inResource instanceof LockableResource))
++		{
++			return false;
++		}
++		LockableResource lr = (LockableResource)inResource;
++		LockToken token = lr.getCurrentLock();
++		if( token != null)
++		{
++			Auth auth = inRequest.getAuthorization();
++			String owner = token.info.owner;
++			if( !owner.equals(auth.getUser()))
++			{
++	    	    log.info("fail: lock owned by: " + owner + " not by " + auth.getUser());
++	    	    String value = inRequest.getHeaders().get("If");
++	    	    if( value != null)
++	    	    {
++	    	    	if( value.contains("opaquelocktoken:" + token.tokenId + ">") )
++	    	    	{
++	    	    		log.info("Contained valid token. so is unlocked");
++	    	    		return false;
++	    	    	}
++	    	    }
++				return true;
++			}
++		}
++		return false;
++	}
++
+     
+ }
+\ No newline at end of file
+Index: milton-api/src/main/java/com/bradmcevoy/http/CompressingResponseHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/CompressingResponseHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/CompressingResponseHandler.java	(working copy)
+@@ -1,5 +1,13 @@
+ package com.bradmcevoy.http;
+ 
++import java.io.OutputStream;
++import java.util.List;
++import java.util.Map;
++import java.util.zip.GZIPOutputStream;
++
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
+ import com.bradmcevoy.http.Request.Method;
+ import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+ import com.bradmcevoy.io.BufferingOutputStream;
+@@ -7,12 +15,6 @@
+ import com.bradmcevoy.io.ReadingException;
+ import com.bradmcevoy.io.StreamUtils;
+ import com.bradmcevoy.io.WritingException;
+-import java.io.OutputStream;
+-import java.util.List;
+-import java.util.Map;
+-import java.util.zip.GZIPOutputStream;
+-import org.slf4j.Logger;
+-import org.slf4j.LoggerFactory;
+ 
+ /**
+  * Response Handler which wraps another, and compresses content if appropriate
+Index: milton-api/src/main/java/com/bradmcevoy/http/PropPatchHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/PropPatchHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/PropPatchHandler.java	(working copy)
+@@ -1,10 +1,5 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.Request.Method;
+-import com.bradmcevoy.http.XmlWriter.Element;
+-import com.bradmcevoy.io.ReadingException;
+-import com.bradmcevoy.io.StreamUtils;
+-import com.bradmcevoy.io.WritingException;
+ import java.io.ByteArrayInputStream;
+ import java.io.ByteArrayOutputStream;
+ import java.io.IOException;
+@@ -15,6 +10,7 @@
+ import java.util.ArrayList;
+ import java.util.Iterator;
+ import java.util.List;
++
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.xml.sax.InputSource;
+@@ -22,6 +18,13 @@
+ import org.xml.sax.XMLReader;
+ import org.xml.sax.helpers.XMLReaderFactory;
+ 
++import com.bradmcevoy.http.Request.Method;
++import com.bradmcevoy.http.Response.Status;
++import com.bradmcevoy.http.XmlWriter.Element;
++import com.bradmcevoy.io.ReadingException;
++import com.bradmcevoy.io.StreamUtils;
++import com.bradmcevoy.io.WritingException;
++
+ /**
+  * Example request (from ms office)
+  *
+@@ -112,7 +115,13 @@
+ 
+     protected void process( HttpManager milton, Request request, Response response, Resource resource ) {
+         log.debug( "process" );
+-        System.out.println( "process" );
++
++       	if( isLockedOut(request, resource))
++    	{
++    		response.setStatus(Status.SC_LOCKED);
++    		return;
++    	}
++ 
+         PropPatchableResource patchable = (PropPatchableResource) resource;
+         // todo: check if token header
+         try {
+@@ -173,7 +182,7 @@
+ 
+     public static class Field {
+ 
+-        final String name;
++        public final String name;
+         String namespaceUri;
+ 
+         public Field( String name ) {
+@@ -191,7 +200,7 @@
+ 
+     public static class SetField extends Field {
+ 
+-        final String value;
++    	public final String value;
+ 
+         public SetField( String name, String value ) {
+             super( name );
+@@ -204,11 +213,11 @@
+         /**
+          * fields to remove
+          */
+-        final List<Field> removeFields = new ArrayList<Field>();
++       public  final List<Field> removeFields = new ArrayList<Field>();
+         /**
+          * fields to set to a value
+          */
+-        final List<SetField> setFields = new ArrayList<PropPatchHandler.SetField>();
++        public final List<SetField> setFields = new ArrayList<PropPatchHandler.SetField>();
+ 
+         private int size() {
+             return removeFields.size() + setFields.size();
+Index: milton-api/src/main/java/com/bradmcevoy/http/CopyHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/CopyHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/CopyHandler.java	(working copy)
+@@ -3,6 +3,8 @@
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.bradmcevoy.http.Response.Status;
++
+ public class CopyHandler extends ExistingEntityHandler {
+     
+     private Logger log = LoggerFactory.getLogger(CopyHandler.class);
+@@ -38,6 +40,15 @@
+             manager.getResponseHandler().respondConflict(resource, response,request, "Destination exists but is not a collection: " + sDest);
+         } else { 
+             log.debug("process: moving resource to: " + rDest.getName());
++
++            Resource fDest = manager.getResourceFactory().getResource(dest.host, dest.url + "/" + dest.name );        
++           	if( isLockedOut( request, fDest ))
++        	{
++        		response.setStatus(Status.SC_LOCKED);
++        		return;
++        	}
++
++            
+             r.copyTo( (CollectionResource)rDest, dest.name );
+             manager.getResponseHandler().respondCreated(resource, response, request);
+         }
+Index: milton-api/src/main/java/com/bradmcevoy/http/ExistingEntityHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/ExistingEntityHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/ExistingEntityHandler.java	(working copy)
+@@ -1,11 +1,12 @@
+ package com.bradmcevoy.http;
+ 
+ 
+-import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+-import com.bradmcevoy.http.exceptions.ConflictException;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.bradmcevoy.http.exceptions.ConflictException;
++import com.bradmcevoy.http.exceptions.NotAuthorizedException;
++
+ public abstract class ExistingEntityHandler extends Handler {
+ 
+     private Logger log = LoggerFactory.getLogger(ExistingEntityHandler.class);
+Index: milton-api/src/main/java/com/bradmcevoy/http/LockHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/LockHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/LockHandler.java	(working copy)
+@@ -1,17 +1,19 @@
+ 
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.common.Path;
+-import com.bradmcevoy.http.LockInfo.LockScope;
+-import com.bradmcevoy.http.LockInfo.LockType;
+-import com.bradmcevoy.http.Request.Method;
+-import com.bradmcevoy.http.Response.Status;
+ import java.io.ByteArrayOutputStream;
+ import java.io.IOException;
++
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.xml.sax.SAXException;
+ 
++import com.bradmcevoy.common.Path;
++import com.bradmcevoy.http.LockInfo.LockScope;
++import com.bradmcevoy.http.LockInfo.LockType;
++import com.bradmcevoy.http.Request.Method;
++import com.bradmcevoy.http.Response.Status;
++
+ /**
+  * Note that this is both a new entity handler and an existing entity handler
+  * 
+@@ -101,7 +103,9 @@
+             processCreateAndLock(request,response,r, name);
+         } else {
+             log.debug("couldnt find parent to execute lock-null, returning not found");
+-            respondNotFound(response,request);
++            //respondNotFound(response,request);
++            response.setStatus(Status.SC_CONFLICT);
++
+         }
+     }
+ 
+@@ -155,6 +159,12 @@
+             throw new RuntimeException("Exception reading request body", ex);
+         }
+ 
++       	if( isLockedOut( request, r ))
++    	{
++    		response.setStatus(Status.SC_LOCKED);
++    		return;
++    	}
++
+         // todo: check if already locked and return 423 locked or 412-precondition failed
+         // also must support multi-status. when locking a collection and a DEPTH > 1, must lock all
+         // child elements
+Index: milton-api/src/main/java/com/bradmcevoy/http/HttpManager.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/HttpManager.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/HttpManager.java	(working copy)
+@@ -4,6 +4,7 @@
+ import java.util.List;
+ import java.util.Map;
+ import java.util.concurrent.ConcurrentHashMap;
++
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+Index: milton-api/src/main/java/com/bradmcevoy/http/PutHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/PutHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/PutHandler.java	(working copy)
+@@ -1,14 +1,16 @@
+ package com.bradmcevoy.http;
+ 
++import java.io.IOException;
++
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
+ import com.bradmcevoy.common.ContentTypeUtils;
+ import com.bradmcevoy.common.Path;
+ import com.bradmcevoy.http.Request.Method;
++import com.bradmcevoy.http.Response.Status;
+ import com.bradmcevoy.http.exceptions.ConflictException;
+ import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+-import java.io.IOException;
+-
+-import org.slf4j.Logger;
+-import org.slf4j.LoggerFactory;
+ 
+ 
+ public class PutHandler extends Handler {
+@@ -31,7 +33,8 @@
+ 
+     @Override
+     public void process(HttpManager manager, Request request, Response response) throws NotAuthorizedException, ConflictException {
+-        String host = request.getHostHeader();
++
++    	String host = request.getHostHeader();
+         String urlToCreateOrUpdate = HttpManager.decodeUrl(request.getAbsolutePath());
+         log.debug("process request: host: " + host + " url: " + urlToCreateOrUpdate);
+ 
+@@ -40,6 +43,17 @@
+ 
+         Resource existingResource = manager.getResourceFactory().getResource(host, urlToCreateOrUpdate);
+         ReplaceableResource replacee;
++        
++        if( existingResource != null)
++        {
++        	//Make sure the parent collection is not locked by someone else
++        	if( isLockedOut(request, existingResource))
++        	{
++        		response.setStatus(Status.SC_LOCKED); //423
++        		return;
++        	}
++
++        }
+         if( existingResource != null && existingResource instanceof ReplaceableResource ) {
+             replacee = (ReplaceableResource) existingResource;
+         } else {
+@@ -47,7 +61,8 @@
+         }
+ 
+         if( replacee != null ) {
+-            processReplace(request,response,(ReplaceableResource)existingResource);
++        
++        	processReplace(request,response,(ReplaceableResource)existingResource);
+         } else {
+             // either no existing resource, or its not replaceable. check for folder
+             String urlFolder = path.getParent().toString();
+@@ -56,7 +71,15 @@
+             if( folderResource != null ) {
+                 log.debug("found folder: " + urlFolder);
+                 if( folderResource instanceof PutableResource ) {
+-                    PutableResource putableResource = (PutableResource) folderResource;
++
++                	//Make sure the parent collection is not locked by someone else
++                	if( isLockedOut(request, folderResource))
++                	{
++                		response.setStatus(Status.SC_LOCKED); //423
++                		return;
++                	}
++
++                	PutableResource putableResource = (PutableResource) folderResource;
+                     processCreate(manager, request, response, (PutableResource)putableResource, nameToCreate);
+                 } else {
+                     manager.getResponseHandler().respondMethodNotImplemented(folderResource, response, request);
+@@ -68,7 +91,9 @@
+     }
+ 
+     protected void processCreate(HttpManager milton, Request request, Response response, PutableResource folder, String newName) {
+-        log.debug("processCreate: " + newName + " in " + folder.getName());
++
++    	
++    	log.debug("processCreate: " + newName + " in " + folder.getName());
+         if( !checkAuthorisation(folder,request) ) {
+             respondUnauthorised(folder,response,request);
+             return ;
+Index: milton-api/src/main/java/com/bradmcevoy/http/AbstractResponse.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/AbstractResponse.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/AbstractResponse.java	(working copy)
+@@ -6,6 +6,7 @@
+ import java.util.Date;
+ import java.util.List;
+ import java.util.TimeZone;
++
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+@@ -53,7 +54,20 @@
+ 
+     public void setContentRangeHeader(long start, long finish, Long totalLength) {
+         String l = totalLength == null ? "*" : totalLength.toString();
+-        String s = "bytes " + start + "-" + finish + "/" + l;
++
++        String s = null;
++        if( finish > -1)
++        {
++        s = "bytes " + start + "-" + finish + "/" + l;
++        }
++        else
++        {
++        	long wrotetill = totalLength.longValue() - 1;
++        	//The end position starts counting at zero. So subtract 1
++            s = "bytes " + start + "-" + wrotetill + "/" + l;
++        }
++ 
++        
+         setResponseHeader(Header.CONTENT_RANGE, s);
+     }
+ 
+Index: milton-api/src/main/java/com/bradmcevoy/http/PostHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/PostHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/PostHandler.java	(working copy)
+@@ -1,13 +1,14 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+-import com.bradmcevoy.http.Request.Method;
+ import java.util.HashMap;
+ import java.util.Map;
+ 
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.bradmcevoy.http.Request.Method;
++import com.bradmcevoy.http.exceptions.NotAuthorizedException;
++
+ public class PostHandler extends ExistingEntityHandler {
+     
+     private Logger log = LoggerFactory.getLogger(PostHandler.class);
+Index: milton-api/src/main/java/com/bradmcevoy/http/NewEntityHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/NewEntityHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/NewEntityHandler.java	(working copy)
+@@ -1,11 +1,12 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+-import com.bradmcevoy.http.exceptions.ConflictException;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+ import com.bradmcevoy.common.Path;
++import com.bradmcevoy.http.Response.Status;
++import com.bradmcevoy.http.exceptions.ConflictException;
++import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+ 
+ public abstract class NewEntityHandler extends Handler {
+     
+@@ -21,28 +22,65 @@
+      */
+     protected abstract void process(HttpManager milton, Request request, Response response, CollectionResource resource, String newName) throws ConflictException, NotAuthorizedException;
+     
+-    
++    //Had to override this to get access to the parent resource for lock testing
+     @Override
+-    public void process(HttpManager manager, Request request, Response response) throws NotAuthorizedException, ConflictException{
++    public void process(HttpManager manager, Request request, Response response) throws ConflictException, NotAuthorizedException {
+         String host = request.getHostHeader();
+-        String url = HttpManager.decodeUrl(request.getAbsolutePath());
++        String finalurl = HttpManager.decodeUrl(request.getAbsolutePath());
+         String name;
+-        log.debug("process request: host: " + host + " url: " + url);
++        log.debug("process request: host: " + host + " url: " + finalurl);
+         
+-        Path path = Path.path(url);
+-        name = path.getName();
+-        path = path.getParent();
+-        url = path.toString();
++        Path finalpath = Path.path(finalurl); //this is the parent collection it goes in
++        name = finalpath.getName();
++        Path parent = finalpath.getParent();
++        String parenturl = parent.toString();
+         
+-        Resource r = manager.getResourceFactory().getResource(host, url);
+-        if( r != null ) {
+-            log.debug("process: resource: " + r.getClass().getName());
+-            process(request,response,r, name);
++        Resource parentcol = manager.getResourceFactory().getResource(host, parenturl);
++        if( parentcol != null ) {
++            log.debug("process: resource: " + parentcol.getClass().getName());
++
++        	if( isLockedOut(request, parentcol))
++        	{
++        		response.setStatus(Status.SC_LOCKED);
++        		return;
++        	}
++            Resource dest = manager.getResourceFactory().getResource(host, finalpath.toString());
++            
++            if( dest != null &&  isLockedOut( request, dest ))
++        	{
++        		response.setStatus(Status.SC_LOCKED); //notowner_modify wants this code here
++        		return;
++        	}
++        	else if( missingLock(request, parentcol))
++        	{
++        		response.setStatus(Status.SC_PRECONDITION_FAILED); //notowner_modify wants this code here
++        		return;
++        	}
++
++            
++            process(request,response,parentcol, name);
+         } else {
+-            response.setStatus(Response.Status.SC_NOT_FOUND);
++            response.setStatus(Response.Status.SC_CONFLICT);
+         }
+     }
+     
++    private boolean missingLock(Request inRequest, Resource inParentcol)
++	{
++		//make sure we are not requiring a lock
++	    String value = inRequest.getHeaders().get("If");
++	    if( value != null)
++	    {
++	    	if( value.contains("(<DAV:no-lock>)") )
++	    	{
++	    		log.info("Contained valid token. so is unlocked");
++	    		return true;
++	    	}
++	    }
++
++		return false;
++	}
++
++    
+     protected void process(Request request, Response response, Resource resource, String name) throws ConflictException, NotAuthorizedException{
+         if( !checkAuthorisation(resource,request) ) {
+             respondUnauthorised(resource,response,request);
+Index: milton-api/src/main/java/com/bradmcevoy/http/DefaultResponseHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/DefaultResponseHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/DefaultResponseHandler.java	(working copy)
+@@ -1,17 +1,18 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+-import com.bradmcevoy.http.Request.Method;
+-import com.bradmcevoy.http.Response.Status;
+ import java.io.IOException;
+ import java.io.OutputStream;
+ import java.io.PrintWriter;
+ import java.util.Date;
+ import java.util.List;
+ import java.util.Map;
++
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.bradmcevoy.http.Request.Method;
++import com.bradmcevoy.http.exceptions.NotAuthorizedException;
++
+ /**
+  *
+  */
+@@ -20,7 +21,7 @@
+     private static final Logger log = LoggerFactory.getLogger(DefaultResponseHandler.class);
+ 
+     public static final String METHOD_NOT_ALLOWED_HTML = "<html><body><h1>Method Not Allowed</h1></body></html>";
+-    public static final String NOT_FOUND_HTML = "<html><body><h1>Not Found (404)</h1></body></html>";
++    public static final String NOT_FOUND_HTML = "<html><body><h1>${url} Not Found (404)</h1></body></html>";
+     public static final String METHOD_NOT_IMPLEMENTED_HTML = "<html><body><h1>Method Not Implemented</h1></body></html>";
+     public static final String CONFLICT_HTML = "<html><body><h1>Conflict</h1></body></html>";
+ 
+@@ -73,7 +74,14 @@
+     public void respondNotFound(Response response, Request request) {
+         log.debug("responding not found");
+         response.setStatus(Response.Status.SC_NOT_FOUND);
+-        sendErrorContent(response, Response.Status.SC_NOT_FOUND);
++	    response.setContentTypeHeader("text/html");
++        response.setStatus(Response.Status.SC_NOT_FOUND);
++        PrintWriter pw = new PrintWriter(response.getOutputStream(), true);
++        
++        String s = NOT_FOUND_HTML.replace("${url}", request.getAbsolutePath());
++        pw.print(s);
++        pw.flush();
++
+     }
+ 
+     public void respondUnauthorised(Resource resource, Response response, Request request) {
+@@ -280,15 +288,6 @@
+         return supportedLevels;
+     }
+ 
+-    private void sendErrorContent(Response response, Status status) {
+-        switch(status) {
+-            case SC_NOT_FOUND:
+-                output(response, NOT_FOUND_HTML);
+-                break;
+-            default:
+-        }
+-    }
+-
+     protected void output(final Response response, final String s) {
+         PrintWriter pw = new PrintWriter(response.getOutputStream(), true);
+         pw.print(s);
+Index: milton-api/src/main/java/com/bradmcevoy/http/Utils.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/Utils.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/Utils.java	(working copy)
+@@ -1,6 +1,5 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.common.Path;
+ import java.net.URI;
+ import java.net.URISyntaxException;
+ import java.nio.ByteBuffer;
+@@ -8,8 +7,11 @@
+ import java.nio.charset.CharacterCodingException;
+ import java.util.Calendar;
+ import java.util.Date;
++
+ import sun.nio.cs.ThreadLocalCoders;
+ 
++import com.bradmcevoy.common.Path;
++
+ public class Utils {
+ 
+     private final static char[] hexDigits = {
+Index: milton-api/src/main/java/com/bradmcevoy/http/ResponseHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/ResponseHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/ResponseHandler.java	(working copy)
+@@ -1,10 +1,11 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+-import com.bradmcevoy.http.Request.Method;
+ import java.util.List;
+ import java.util.Map;
+ 
++import com.bradmcevoy.http.Request.Method;
++import com.bradmcevoy.http.exceptions.NotAuthorizedException;
++
+ /**
+  *  The ResponseHandler should handle all responses back to the client.
+  *
+Index: milton-api/src/main/java/com/bradmcevoy/http/GetableResource.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/GetableResource.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/GetableResource.java	(working copy)
+@@ -1,10 +1,11 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+ import java.io.IOException;
+ import java.io.OutputStream;
+ import java.util.Map;
+ 
++import com.bradmcevoy.http.exceptions.NotAuthorizedException;
++
+ public interface GetableResource extends Resource {
+     /**
+      * Send the resource's content using the given output stream. Implementations
+Index: milton-api/src/main/java/com/bradmcevoy/http/DebugFilter.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/DebugFilter.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/DebugFilter.java	(working copy)
+@@ -1,9 +1,5 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.Request.Header;
+-import com.bradmcevoy.http.Request.Method;
+-import com.bradmcevoy.http.Response.Status;
+-import com.bradmcevoy.io.StreamUtils;
+ import java.io.ByteArrayInputStream;
+ import java.io.ByteArrayOutputStream;
+ import java.io.File;
+@@ -14,9 +10,12 @@
+ import java.io.OutputStream;
+ import java.io.PrintWriter;
+ import java.util.Map;
++
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.bradmcevoy.io.StreamUtils;
++
+ /**
+  *
+  */
+Index: milton-api/src/main/java/com/bradmcevoy/http/UnlockHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/UnlockHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/UnlockHandler.java	(working copy)
+@@ -5,6 +5,7 @@
+ import org.slf4j.LoggerFactory;
+ 
+ import com.bradmcevoy.http.Request.Method;
++import com.bradmcevoy.http.Response.Status;
+ 
+ public class UnlockHandler extends ExistingEntityHandler {
+ 
+@@ -19,6 +20,20 @@
+         LockableResource r = (LockableResource) resource;
+         String sToken = request.getLockTokenHeader();        
+         sToken = LockHandler.parseToken(sToken);
++        
++        //Only unlock if the resource is not locked or if the token matches?
++        
++       	if( r.getCurrentLock() != null && 
++       			!sToken.equals( r.getCurrentLock().tokenId) &&
++       			isLockedOut( request, resource ))
++    	{
++       		//Should this be unlocked easily? With other tokens?
++    		response.setStatus(Status.SC_LOCKED);
++    	    log.info("cant unlock with token: " + sToken);
++    		return;
++    	}
++
++        
+         log.debug("unlocking token: " + sToken);
+         r.unlock(sToken);
+     }
+Index: milton-api/src/main/java/com/bradmcevoy/http/Resource.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/Resource.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/Resource.java	(working copy)
+@@ -84,5 +84,5 @@
+      *  Return null for no redirect
+      */
+     abstract String checkRedirect(Request request);
+-    
++
+ }
+Index: milton-api/src/main/java/com/bradmcevoy/http/SimpleResource.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/SimpleResource.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/SimpleResource.java	(working copy)
+@@ -1,13 +1,15 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.Request.Method;
+ import java.io.IOException;
+ import java.io.OutputStream;
+ import java.util.Date;
+ import java.util.Map;
++
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.bradmcevoy.http.Request.Method;
++
+ /**
+  * A very simple resource implementation, which simply takes parameters in the
+  * constructor to define the resource, which includes the content
+@@ -96,4 +98,5 @@
+     public String checkRedirect(Request request) {
+         return null;
+     }
++    
+ }
+Index: milton-api/src/main/java/com/bradmcevoy/http/MoveHandler.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/MoveHandler.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/MoveHandler.java	(working copy)
+@@ -1,11 +1,13 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.exceptions.ConflictException;
++import java.net.URI;
++
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+ import com.bradmcevoy.http.Request.Method;
+-import java.net.URI;
++import com.bradmcevoy.http.Response.Status;
++import com.bradmcevoy.http.exceptions.ConflictException;
+ 
+ 
+ public class MoveHandler extends ExistingEntityHandler {
+@@ -29,6 +31,13 @@
+     @Override
+     protected void process(HttpManager milton, Request request, Response response, Resource resource) {        
+         MoveableResource r = (MoveableResource) resource;
++        
++    	if( isLockedOut( request, r ))
++    	{
++    		response.setStatus(Status.SC_LOCKED);
++    		return;
++    	}
++
+         String sDest = request.getDestinationHeader();
+         log.debug("dest header1: " + sDest);
+         URI destUri = URI.create(sDest);
+@@ -37,6 +46,13 @@
+         Dest dest = new Dest(destUri.getHost(),sDest);
+         log.debug("looking for destination parent: " + dest.host + " - " + dest.url);
+         Resource rDest = manager.getResourceFactory().getResource(dest.host, dest.url);        
++        
++    	if( isLockedOut( request, rDest ))
++    	{
++    		response.setStatus(Status.SC_LOCKED);
++    		return;
++    	}
++
+         log.debug("process: moving from: " + r.getName() + " -> " + dest.url + " with name: " + dest.name);
+         if( rDest == null ) {
+             log.debug("process: destination parent does not exist: " + sDest);
+Index: milton-api/src/main/java/com/bradmcevoy/http/StandardFilter.java
+===================================================================
+--- milton-api/src/main/java/com/bradmcevoy/http/StandardFilter.java	(revision 153)
++++ milton-api/src/main/java/com/bradmcevoy/http/StandardFilter.java	(working copy)
+@@ -1,12 +1,13 @@
+ package com.bradmcevoy.http;
+ 
+-import com.bradmcevoy.http.exceptions.NotAuthorizedException;
+-import com.bradmcevoy.http.exceptions.ConflictException;
+-
+ import java.io.IOException;
++
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
++import com.bradmcevoy.http.exceptions.ConflictException;
++import com.bradmcevoy.http.exceptions.NotAuthorizedException;
++
+ public class StandardFilter implements Filter {
+     
+     private Logger log = LoggerFactory.getLogger(StandardFilter.class);
+Index: milton-servlet/src/main/java/com/bradmcevoy/http/StaticResource.java
+===================================================================
+--- milton-servlet/src/main/java/com/bradmcevoy/http/StaticResource.java	(revision 153)
++++ milton-servlet/src/main/java/com/bradmcevoy/http/StaticResource.java	(working copy)
+@@ -103,4 +103,9 @@
+         return ll;
+     }
+ 
++	public LockToken getLockToken()
++	{
++		return null;
++	}
++
+ }
+Index: milton-servlet/src/main/java/com/bradmcevoy/http/SpringAwareMiltonServlet.java
+===================================================================
+--- milton-servlet/src/main/java/com/bradmcevoy/http/SpringAwareMiltonServlet.java	(revision 153)
++++ milton-servlet/src/main/java/com/bradmcevoy/http/SpringAwareMiltonServlet.java	(working copy)
+@@ -1,6 +1,7 @@
+ package com.bradmcevoy.http;
+ 
+ import java.io.IOException;
++
+ import javax.servlet.Servlet;
+ import javax.servlet.ServletConfig;
+ import javax.servlet.ServletException;
+@@ -9,8 +10,6 @@
+ 
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+-import org.springframework.context.ApplicationContext;
+-import org.springframework.context.support.ClassPathXmlApplicationContext;
+ 
+ 
+ /**
+Index: .project
+===================================================================
+--- .project	(revision 0)
++++ .project	(revision 0)
+@@ -0,0 +1,17 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<projectDescription>
++	<name>milton</name>
++	<comment></comment>
++	<projects>
++	</projects>
++   <buildSpec>
++                <buildCommand>
++                        <name>org.eclipse.jdt.core.javabuilder</name>
++                        <arguments>
++                        </arguments>
++                </buildCommand>
++        </buildSpec>
++<natures>
++        <nature>org.eclipse.jdt.core.javanature</nature>
++    </natures>
++</projectDescription>

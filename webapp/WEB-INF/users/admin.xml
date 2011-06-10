@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<user enabled="true">
+  <user-name>admin</user-name>
+  <password>DES:2JPGMLB8Y60=</password>
+  <creation-date>1145979448702</creation-date>
+  <properties>
+    <property name="lastName" value="Administrator"/>
+    <property name="email" value="support@openedit.org"/>
+    <property name="firstName" value="The"/>
+    <property name="openadmintoolbar" value="true"/>
+  </properties>
+  <group id="administrators"/>
+</user>

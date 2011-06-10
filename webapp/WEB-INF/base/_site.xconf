@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+Any setting in here can be overriden by adding a second _site.xconf file within a sub directory. OpenEdit will 
+combine all the settings starting from most specific up to most general.
+
+You can also add these settings to other .xconf files that are named the same as the page you are trying to load.
+
+i.e. /index.xconf 
+-->
+
+<page>
+	
+	<generator name="webDavGenerator" alltypes="true"/>
+	
+	<!-- Default titles and keywords for the site -->
+	<property name="title">OpenEdit Editor Site</property>
+	<property name="keywords">dog cat monkey</property>
+	<property name="description">This is a simple description</property>
+
+ 	<!-- Allows uses to create their own accounts in the guest group -->
+	<property name="allowguestregistration">false</property>
+
+	<!-- Defines what languages can be selected for this site -->
+	<property name="languages">
+		<value>English</value>
+		<value locale="es">Español</value>
+	</property>	  
+	<!-- Save in /translations directory for certain languages  -->
+	<property name="usemultiplelanguages">
+		<value>true</value>
+		<value locale="en">false</value>
+	</property>
+
+	<!-- Forces the editor to create draft version of files it edits-->
+	<property name="oe.edit.draftedits">true</property>
+	<property name="encoding">UTF-8</property>
+
+  	<generator accepts="*.jsp" name="servlet"/>
+  	<generator accepts="*.php" name="servlet"/>
+  	<generator mimetypes="text/html" name="velocity"/>
+  
+  	<generator name="file"/>
+    
+	<!-- Default group permissions required to edit pages -->
+	<edit-requirements>
+    	<and>
+      		<permission name="oe.edit"/>
+      		<not>
+        		<page-property equals="false" name="editable"/>
+      		</not>
+    	</and>
+  	</edit-requirements>
+
+  	<!-- Logs in a user with a cookie -->
+  	<!--
+	<path-action name="Admin.autoLogin"/>
+	-->  
+</page>
+			
+
+	
+	

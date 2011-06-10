@@ -1,0 +1,3 @@
+<permissions name="WebDav">
+<permission id="oe.webdav" description="Access OE through WEBDAV Pages" >This allows access to the OE file repository through WEBDAV</permission>
+</permissions>
