@@ -4,7 +4,7 @@ importPackage( Packages.java.io );
 importPackage( Packages.java.lang );
 importPackage( Packages.com.openedit.modules.update );
 
-var war = "http://dev.openedit.org/anthill/projects/entermedia-webdav/ROOT.war";
+var war = "http://dev.entermediasoftware.com/jenkins/job/entermedia-webdav/lastSuccessfulBuild/artifact/deploy/ROOT.war";
 
 var root = moduleManager.getBean("root").getAbsolutePath();
 var web = root + "/WEB-INF";
